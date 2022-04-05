@@ -36,7 +36,10 @@ class Train_Test_Process():
 
 
     def _get_net(self):
-        return Neuron_SegNet(num_class = self.num_class)
+        if self.args.net == 'neuron_segnet':
+            return Neuron_SegNet(num_class = self.num_class)
+        elif self.args.net == 'neuron_unet_v1':
+            return Neuron_UNet_V1(num_class = self.num_class)
 
     def _data(self):
         self.train_root = self.args.dataroot
