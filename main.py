@@ -26,7 +26,7 @@ def my_mkdir(file_name, mode = 'file'):
 
 def main():
     parser = argparse.ArgumentParser(description="PyTorch Training")
-    parser.add_argument('--net',type = str,default='neuron_unet_v1', choices = NeuronNet)
+    parser.add_argument('--net',type = str,default='neuron_unet_v2', choices = NeuronNet)
     parser.add_argument('--dataroot', type = str, default=DataTrain_Root, help = 'the path to the dataset')
     parser.add_argument('--data_train_source', type = str, default=TrainSource, help = 'the train image name list of the dataset')
     parser.add_argument('--data_test_source', type=str, default=TestSource, help='the test image name list of the dataset')
