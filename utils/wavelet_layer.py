@@ -315,6 +315,284 @@ class IDWT_2D(Module):
         self.get_matrix()
         return IDWTFunction_2D.apply(LL, LH, HL, HH, self.matrix_low_0, self.matrix_low-1, self.matrix_high_0, self.matrix_high_1)
 
+class DWT_3D(Module):
+    """
+    input: (N, C, D, H, W)
+    output: -- LLL (N, C, D/2, H/2, W/2)
+            -- LLH (N, C, D/2, H/2, W/2)
+            -- LHL (N, C, D/2, H/2, W/2)
+            -- LHH (N, C, D/2, H/2, W/2)
+            -- HLL (N, C, D/2, H/2, W/2)
+            -- HLH (N, C, D/2, H/2, W/2)
+            -- HHL (N, C, D/2, H/2, W/2)
+            -- HHH (N, C, D/2, H/2, W/2)
+    """
+    def __init__(self, wavename):
+        """
+        :param band_low: 小波分解所用低频滤波器组
+        :param band_high: 小波分解所用高频滤波器组
+        """
+        super(DWT_3D, self).__init__()
+        wavelet = pywt.Wavelet(wavename)
+        self.band_low = wavelet.rec_lo
+        self.band_high = wavelet.rec_hi
+        assert len(self.band_low) == len(self.band_high)
+        self.band_length = len(self.band_low)
+        self.kernel_size = self.band_length
+        self.stride = 2
+        assert self.band_length % 2 == 0
+        self.band_length_half = math.floor(self.band_length / 2)
+
+    def get_matrix(self):
+        """
+        生成变换矩阵
+        :return:
+        """
+        L1 = np.max((self.input_height, self.input_width))
+        L = math.floor(L1 / 2)
+        matrix_h = np.zeros( ( L,      L1 + self.band_length - 2 ) )
+        matrix_g = np.zeros( ( L1 - L, L1 + self.band_length - 2 ) )
+        end = None if self.band_length_half == 1 else (-self.band_length_half+1)
+
+        index = 0
+        for i in range(L):
+            for j in range(self.band_length):
+                matrix_h[i, index+j] = self.band_low[j]
+            index += 2
+        matrix_h_0 = matrix_h[0:(math.floor(self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
+        matrix_h_1 = matrix_h[0:(math.floor(self.input_width / 2)), 0:(self.input_width + self.band_length - 2)]
+        matrix_h_2 = matrix_h[0:(math.floor(self.input_depth / 2)), 0:(self.input_depth + self.band_length - 2)]
+
+        index = 0
+        for i in range(L1 - L):
+            for j in range(self.band_length):
+                matrix_g[i, index+j] = self.band_high[j]
+            index += 2
+        matrix_g_0 = matrix_g[0:(self.input_height - math.floor(self.input_height / 2)),0:(self.input_height + self.band_length - 2)]
+        matrix_g_1 = matrix_g[0:(self.input_width - math.floor(self.input_width / 2)),0:(self.input_width + self.band_length - 2)]
+        matrix_g_2 = matrix_g[0:(self.input_depth - math.floor(self.input_depth / 2)),0:(self.input_depth + self.band_length - 2)]
+
+        matrix_h_0 = matrix_h_0[:,(self.band_length_half-1):end]
+        matrix_h_1 = matrix_h_1[:,(self.band_length_half-1):end]
+        matrix_h_1 = np.transpose(matrix_h_1)
+        matrix_h_2 = matrix_h_2[:,(self.band_length_half-1):end]
+
+        matrix_g_0 = matrix_g_0[:,(self.band_length_half-1):end]
+        matrix_g_1 = matrix_g_1[:,(self.band_length_half-1):end]
+        matrix_g_1 = np.transpose(matrix_g_1)
+        matrix_g_2 = matrix_g_2[:,(self.band_length_half-1):end]
+        if torch.cuda.is_available():
+            self.matrix_low_0 = torch.Tensor(matrix_h_0).cuda()
+            self.matrix_low_1 = torch.Tensor(matrix_h_1).cuda()
+            self.matrix_low_2 = torch.Tensor(matrix_h_2).cuda()
+            self.matrix_high_0 = torch.Tensor(matrix_g_0).cuda()
+            self.matrix_high_1 = torch.Tensor(matrix_g_1).cuda()
+            self.matrix_high_2 = torch.Tensor(matrix_g_2).cuda()
+        else:
+            self.matrix_low_0 = torch.Tensor(matrix_h_0)
+            self.matrix_low_1 = torch.Tensor(matrix_h_1)
+            self.matrix_low_2 = torch.Tensor(matrix_h_2)
+            self.matrix_high_0 = torch.Tensor(matrix_g_0)
+            self.matrix_high_1 = torch.Tensor(matrix_g_1)
+            self.matrix_high_2 = torch.Tensor(matrix_g_2)
+
+    def forward(self, input):
+        assert len(input.size()) == 5
+        self.input_depth = input.size()[-3]
+        self.input_height = input.size()[-2]
+        self.input_width = input.size()[-1]
+        #assert self.input_height > self.band_length and self.input_width > self.band_length and self.input_depth > self.band_length
+        self.get_matrix()
+        return DWTFunction_3D.apply(input, self.matrix_low_0, self.matrix_low_1, self.matrix_low_2,
+                                           self.matrix_high_0, self.matrix_high_1, self.matrix_high_2)
+
+
+class DWT_3D_tiny(Module):
+    """
+    input: (N, C, D, H, W)
+    output: -- LLL (N, C, D/2, H/2, W/2)
+            -- LLH (N, C, D/2, H/2, W/2)
+            -- LHL (N, C, D/2, H/2, W/2)
+            -- LHH (N, C, D/2, H/2, W/2)
+            -- HLL (N, C, D/2, H/2, W/2)
+            -- HLH (N, C, D/2, H/2, W/2)
+            -- HHL (N, C, D/2, H/2, W/2)
+            -- HHH (N, C, D/2, H/2, W/2)
+    """
+    def __init__(self, wavename):
+        """
+        :param band_low: 小波分解所用低频滤波器组
+        :param band_high: 小波分解所用高频滤波器组
+        """
+        super(DWT_3D_tiny, self).__init__()
+        wavelet = pywt.Wavelet(wavename)
+        self.band_low = wavelet.rec_lo
+        self.band_high = wavelet.rec_hi
+        assert len(self.band_low) == len(self.band_high)
+        self.band_length = len(self.band_low)
+        self.kernel_size = self.band_length
+        self.stride = 2
+        assert self.band_length % 2 == 0
+        self.band_length_half = math.floor(self.band_length / 2)
+
+    def get_matrix(self):
+        """
+        生成变换矩阵
+        :return:
+        """
+        L1 = np.max((self.input_height, self.input_width))
+        L = math.floor(L1 / 2)
+        matrix_h = np.zeros( ( L,      L1 + self.band_length - 2 ) )
+        matrix_g = np.zeros( ( L1 - L, L1 + self.band_length - 2 ) )
+        end = None if self.band_length_half == 1 else (-self.band_length_half+1)
+
+        index = 0
+        for i in range(L):
+            for j in range(self.band_length):
+                matrix_h[i, index+j] = self.band_low[j]
+            index += 2
+        matrix_h_0 = matrix_h[0:(math.floor(self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
+        matrix_h_1 = matrix_h[0:(math.floor(self.input_width / 2)), 0:(self.input_width + self.band_length - 2)]
+        matrix_h_2 = matrix_h[0:(math.floor(self.input_depth / 2)), 0:(self.input_depth + self.band_length - 2)]
+
+        index = 0
+        for i in range(L1 - L):
+            for j in range(self.band_length):
+                matrix_g[i, index+j] = self.band_high[j]
+            index += 2
+        matrix_g_0 = matrix_g[0:(self.input_height - math.floor(self.input_height / 2)),0:(self.input_height + self.band_length - 2)]
+        matrix_g_1 = matrix_g[0:(self.input_width - math.floor(self.input_width / 2)),0:(self.input_width + self.band_length - 2)]
+        matrix_g_2 = matrix_g[0:(self.input_depth - math.floor(self.input_depth / 2)),0:(self.input_depth + self.band_length - 2)]
+
+        matrix_h_0 = matrix_h_0[:,(self.band_length_half-1):end]
+        matrix_h_1 = matrix_h_1[:,(self.band_length_half-1):end]
+        matrix_h_1 = np.transpose(matrix_h_1)
+        matrix_h_2 = matrix_h_2[:,(self.band_length_half-1):end]
+
+        matrix_g_0 = matrix_g_0[:,(self.band_length_half-1):end]
+        matrix_g_1 = matrix_g_1[:,(self.band_length_half-1):end]
+        matrix_g_1 = np.transpose(matrix_g_1)
+        matrix_g_2 = matrix_g_2[:,(self.band_length_half-1):end]
+        if torch.cuda.is_available():
+            self.matrix_low_0 = torch.Tensor(matrix_h_0).cuda()
+            self.matrix_low_1 = torch.Tensor(matrix_h_1).cuda()
+            self.matrix_low_2 = torch.Tensor(matrix_h_2).cuda()
+            self.matrix_high_0 = torch.Tensor(matrix_g_0).cuda()
+            self.matrix_high_1 = torch.Tensor(matrix_g_1).cuda()
+            self.matrix_high_2 = torch.Tensor(matrix_g_2).cuda()
+        else:
+            self.matrix_low_0 = torch.Tensor(matrix_h_0)
+            self.matrix_low_1 = torch.Tensor(matrix_h_1)
+            self.matrix_low_2 = torch.Tensor(matrix_h_2)
+            self.matrix_high_0 = torch.Tensor(matrix_g_0)
+            self.matrix_high_1 = torch.Tensor(matrix_g_1)
+            self.matrix_high_2 = torch.Tensor(matrix_g_2)
+
+    def forward(self, input):
+        assert len(input.size()) == 5
+        self.input_depth = input.size()[-3]
+        self.input_height = input.size()[-2]
+        self.input_width = input.size()[-1]
+        self.get_matrix()
+        return DWTFunction_3D_tiny.apply(input, self.matrix_low_0, self.matrix_low_1, self.matrix_low_2,
+                                         self.matrix_high_0, self.matrix_high_1, self.matrix_high_2)
+
+
+class IDWT_3D(Module):
+    """
+    input:  -- LLL (N, C, D/2, H/2, W/2)
+            -- LLH (N, C, D/2, H/2, W/2)
+            -- LHL (N, C, D/2, H/2, W/2)
+            -- LHH (N, C, D/2, H/2, W/2)
+            -- HLL (N, C, D/2, H/2, W/2)
+            -- HLH (N, C, D/2, H/2, W/2)
+            -- HHL (N, C, D/2, H/2, W/2)
+            -- HHH (N, C, D/2, H/2, W/2)
+    output: (N, C, D, H, W)
+    """
+    def __init__(self, wavename):
+        """
+        :param band_low: 小波重构所用低频滤波器组
+        :param band_high: 小波重构所用高频滤波器组
+        """
+        super(IDWT_3D, self).__init__()
+        wavelet = pywt.Wavelet(wavename)
+        self.band_low = wavelet.dec_lo
+        self.band_high = wavelet.dec_hi
+        self.band_low.reverse()
+        self.band_high.reverse()
+        assert len(self.band_low) == len(self.band_high)
+        self.band_length = len(self.band_low)
+        self.kernel_size = self.band_length
+        self.stride = 2
+        assert self.band_length % 2 == 0
+        self.band_length_half = math.floor(self.band_length / 2)
+
+    def get_matrix(self):
+        """
+        生成变换矩阵
+        :return:
+        """
+        L1 = np.max((self.input_height, self.input_width))
+        L = math.floor(L1 / 2)
+        matrix_h = np.zeros( ( L,      L1 + self.band_length - 2 ) )
+        matrix_g = np.zeros( ( L1 - L, L1 + self.band_length - 2 ) )
+        end = None if self.band_length_half == 1 else (-self.band_length_half+1)
+
+        index = 0
+        for i in range(L):
+            for j in range(self.band_length):
+                matrix_h[i, index+j] = self.band_low[j]
+            index += 2
+        matrix_h_0 = matrix_h[0:(math.floor(self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
+        matrix_h_1 = matrix_h[0:(math.floor(self.input_width / 2)), 0:(self.input_width + self.band_length - 2)]
+        matrix_h_2 = matrix_h[0:(math.floor(self.input_depth / 2)), 0:(self.input_depth + self.band_length - 2)]
+
+        index = 0
+        for i in range(L1 - L):
+            for j in range(self.band_length):
+                matrix_g[i, index+j] = self.band_high[j]
+            index += 2
+        matrix_g_0 = matrix_g[0:(self.input_height - math.floor(self.input_height / 2)),0:(self.input_height + self.band_length - 2)]
+        matrix_g_1 = matrix_g[0:(self.input_width - math.floor(self.input_width / 2)),0:(self.input_width + self.band_length - 2)]
+        matrix_g_2 = matrix_g[0:(self.input_depth - math.floor(self.input_depth / 2)),0:(self.input_depth + self.band_length - 2)]
+
+        matrix_h_0 = matrix_h_0[:,(self.band_length_half-1):end]
+        matrix_h_1 = matrix_h_1[:,(self.band_length_half-1):end]
+        matrix_h_1 = np.transpose(matrix_h_1)
+        matrix_h_2 = matrix_h_2[:,(self.band_length_half-1):end]
+
+        matrix_g_0 = matrix_g_0[:,(self.band_length_half-1):end]
+        matrix_g_1 = matrix_g_1[:,(self.band_length_half-1):end]
+        matrix_g_1 = np.transpose(matrix_g_1)
+        matrix_g_2 = matrix_g_2[:,(self.band_length_half-1):end]
+        if torch.cuda.is_available():
+            self.matrix_low_0 = torch.Tensor(matrix_h_0).cuda()
+            self.matrix_low_1 = torch.Tensor(matrix_h_1).cuda()
+            self.matrix_low_2 = torch.Tensor(matrix_h_2).cuda()
+            self.matrix_high_0 = torch.Tensor(matrix_g_0).cuda()
+            self.matrix_high_1 = torch.Tensor(matrix_g_1).cuda()
+            self.matrix_high_2 = torch.Tensor(matrix_g_2).cuda()
+        else:
+            self.matrix_low_0 = torch.Tensor(matrix_h_0)
+            self.matrix_low_1 = torch.Tensor(matrix_h_1)
+            self.matrix_low_2 = torch.Tensor(matrix_h_2)
+            self.matrix_high_0 = torch.Tensor(matrix_g_0)
+            self.matrix_high_1 = torch.Tensor(matrix_g_1)
+            self.matrix_high_2 = torch.Tensor(matrix_g_2)
+
+    def forward(self, LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH):
+        assert len(LLL.size()) == len(LLH.size()) == len(LHL.size()) == len(LHH.size()) == 5
+        assert len(HLL.size()) == len(HLH.size()) == len(HHL.size()) == len(HHH.size()) == 5
+        self.input_depth = LLL.size()[-3] + HHH.size()[-3]
+        self.input_height = LLL.size()[-2] + HHH.size()[-2]
+        self.input_width = LLL.size()[-1] + HHH.size()[-1]
+        #assert self.input_height > self.band_length and self.input_width > self.band_length and self.input_depth > self.band_length
+        self.get_matrix()
+        return IDWTFunction_3D.apply(LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH,
+                                     self.matrix_low_0, self.matrix_low_1, self.matrix_low_2,
+                                     self.matrix_high_0, self.matrix_high_1, self.matrix_high_2)
+
 
 if __name__ == '__main__':
     a = DWT_2D("db4")
