@@ -3,6 +3,7 @@ from torch import nn
 from torch.nn import Module
 from datetime import datetime
 import torch.nn.functional as F
+from utils.wavelet_layer import *
 
 
 class Conv3x3_BN(Module):
@@ -648,6 +649,619 @@ class Neuron_UNet_V2(Module):
 
         B, C, D, H, W = output.size()
         output = F.interpolate(output, size = (2 * D, 2 * H, 2 * W), mode = 'trilinear', align_corners=True)
+        output = self.conv3d_12_de(self.conv3d_11_de(torch.cat((output, output_1), dim=1)))
+
+        output = self.conv_final(output)
+
+        return output
+
+# use 3D-DWT to downsample, use interpolate to upsample
+class Neuron_WaveSNet_V1(Module):
+    def __init__(self, num_class=2, with_BN=True, channel_width=4, wavename = 'haar'):
+        super(Neuron_WaveSNet_V1, self).__init__()
+        # Batch * 1 * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        self.conv3d_11_en = Conv3x3_BN(in_channels=1,
+                                       out_channels=1 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+        # Batch * channel_width * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        # same
+        self.conv3d_12_en = Conv3x3_BN(in_channels=1 * channel_width,
+                                       out_channels=1 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * channel_width * 32 * 128 * 128 => Batch * channel_width * 16 * 64 * 64
+        self.downsampling_1 = DWT_3D_tiny(wavename = wavename)
+
+        # Batch * channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 16 * 64 * 64
+        self.conv3d_21_en = Conv3x3_BN(in_channels=1 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 16 * 64 * 64
+        # same
+        self.conv3d_22_en = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 8 * 32 * 32
+        self.downsampling_2 = DWT_3D_tiny(wavename = wavename)
+
+        # Batch * 2*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 8 * 32 * 32
+        self.conv3d_31_en = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 8 * 32 * 32
+        # same
+        self.conv3d_32_en = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 4 * 16 * 16
+        self.downsampling_3 = DWT_3D_tiny(wavename = wavename)
+
+        # Batch * 4*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 4 * 16 * 16
+        self.conv3d_41_en = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=8 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 8*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 4 * 16 * 16
+        # same
+        self.conv3d_42_en = Conv3x3_BN(in_channels=8 * channel_width,
+                                       out_channels=8 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 8*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 2 * 8 * 8
+        self.downsampling_4 = DWT_3D_tiny(wavename = wavename)
+
+        # Batch * 8*channel_width * 2 * 8 * 8 => Batch * 8*channel_width * 2 * 8 * 8
+        # same
+        self.conv3d_51 = Conv3x3_BN(in_channels=8 * channel_width,
+                                    out_channels=8 * channel_width,
+                                    kernel_size=3,
+                                    padding=1,
+                                    with_BN=with_BN)
+        self.conv3d_52 = Conv3x3_BN(in_channels=8 * channel_width,
+                                    out_channels=8 * channel_width,
+                                    kernel_size=3,
+                                    padding=1,
+                                    with_BN=with_BN)
+
+        # Batch * 8*channel_width * 2 * 8 * 8 => Batch * 8*channel_width * 4 * 16 * 16
+        # upsample4
+
+        # Batch * 16*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 4 * 16 * 16
+        # has encode information
+        self.conv3d_41_de = Conv3x3_BN(in_channels=16 * channel_width,
+                                       out_channels=8 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+        # Batch * 8*channel_width * 4 * 16 * 16 => Batch * 4*channel_width * 4 * 16 * 16
+        self.conv3d_42_de = Conv3x3_BN(in_channels=8 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 4 * 16 * 16 => Batch * 4*channel_width * 8 * 32 * 32
+        # upsample3
+
+        # Batch * 8*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 8 * 32 * 32
+        # has encode information
+        self.conv3d_31_de = Conv3x3_BN(in_channels=8 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 8 * 32 * 32 => Batch * 2*channel_width * 8 * 32 * 32
+        self.conv3d_32_de = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 8 * 32 * 32 => Batch * 2*channel_width * 16 * 64 * 64
+        # upsample2
+
+        # Batch * 4*channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 16 * 64 * 64
+        # has encode information
+        self.conv3d_21_de = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 16 * 64 * 64 => Batch * channel_width * 16 * 64 * 64
+        self.conv3d_22_de = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * channel_width * 16 * 64 * 64 => Batch * channel_width * 32 * 128 * 128
+        # upsample1
+
+        # Batch * 2*channel_width * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        # has encode information
+        self.conv3d_11_de = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * channel_width * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        # same
+        self.conv3d_12_de = Conv3x3_BN(in_channels=channel_width,
+                                       out_channels=channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        self.conv_final = nn.Conv3d(in_channels=channel_width,
+                                    out_channels=num_class,
+                                    kernel_size=1)
+
+
+    def forward(self, input):
+        output_1 = self.conv3d_12_en(self.conv3d_11_en(input))
+        output = self.downsampling_1(output_1)
+
+        output_2 = self.conv3d_22_en(self.conv3d_21_en(output))
+        output = self.downsampling_2(output_2)
+
+        output_3 = self.conv3d_32_en(self.conv3d_31_en(output))
+        output = self.downsampling_3(output_3)
+
+        output_4 = self.conv3d_42_en(self.conv3d_41_en(output))
+        output = self.downsampling_4(output_4)
+
+        output = self.conv3d_52(self.conv3d_51(output))
+
+        B, C, D, H, W = output.size()
+        output = F.interpolate(output, size = (2 * D, 2 * H, 2 * W), mode = 'trilinear', align_corners=True)
+        output = self.conv3d_42_de(self.conv3d_41_de(torch.cat((output, output_4), dim=1)))
+
+        B, C, D, H, W = output.size()
+        output = F.interpolate(output, size = (2 * D, 2 * H, 2 * W), mode = 'trilinear', align_corners=True)
+        output = self.conv3d_32_de(self.conv3d_31_de(torch.cat((output, output_3), dim=1)))
+
+        B, C, D, H, W = output.size()
+        output = F.interpolate(output, size = (2 * D, 2 * H, 2 * W), mode = 'trilinear', align_corners=True)
+        output = self.conv3d_22_de(self.conv3d_21_de(torch.cat((output, output_2), dim=1)))
+
+        B, C, D, H, W = output.size()
+        output = F.interpolate(output, size = (2 * D, 2 * H, 2 * W), mode = 'trilinear', align_corners=True)
+        output = self.conv3d_12_de(self.conv3d_11_de(torch.cat((output, output_1), dim=1)))
+
+        output = self.conv_final(output)
+
+        return output
+
+# use 3D-DWT to downsample, use convTranspose to upsample
+class Neuron_WaveSNet_V2(Module):
+    def __init__(self, num_class=2, with_BN=True, channel_width=4, wavename = 'haar'):
+        super(Neuron_WaveSNet_V2, self).__init__()
+        # Batch * 1 * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        self.conv3d_11_en = Conv3x3_BN(in_channels=1,
+                                       out_channels=1 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+        # Batch * channel_width * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        # same
+        self.conv3d_12_en = Conv3x3_BN(in_channels=1 * channel_width,
+                                       out_channels=1 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * channel_width * 32 * 128 * 128 => Batch * channel_width * 16 * 64 * 64
+        self.downsampling_1 = DWT_3D_tiny(wavename = wavename)
+
+        # Batch * channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 16 * 64 * 64
+        self.conv3d_21_en = Conv3x3_BN(in_channels=1 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 16 * 64 * 64
+        # same
+        self.conv3d_22_en = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 8 * 32 * 32
+        self.downsampling_2 = DWT_3D_tiny(wavename = wavename)
+
+        # Batch * 2*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 8 * 32 * 32
+        self.conv3d_31_en = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 8 * 32 * 32
+        # same
+        self.conv3d_32_en = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 4 * 16 * 16
+        self.downsampling_3 = DWT_3D_tiny(wavename = wavename)
+
+        # Batch * 4*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 4 * 16 * 16
+        self.conv3d_41_en = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=8 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 8*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 4 * 16 * 16
+        # same
+        self.conv3d_42_en = Conv3x3_BN(in_channels=8 * channel_width,
+                                       out_channels=8 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 8*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 2 * 8 * 8
+        self.downsampling_4 = DWT_3D_tiny(wavename = wavename)
+
+        # Batch * 8*channel_width * 2 * 8 * 8 => Batch * 8*channel_width * 2 * 8 * 8
+        # same
+        self.conv3d_51 = Conv3x3_BN(in_channels=8 * channel_width,
+                                    out_channels=8 * channel_width,
+                                    kernel_size=3,
+                                    padding=1,
+                                    with_BN=with_BN)
+        self.conv3d_52 = Conv3x3_BN(in_channels=8 * channel_width,
+                                    out_channels=8 * channel_width,
+                                    kernel_size=3,
+                                    padding=1,
+                                    with_BN=with_BN)
+
+        # Batch * 8*channel_width * 2 * 8 * 8 => Batch * 8*channel_width * 4 * 16 * 16
+        self.upsampling_4 = nn.ConvTranspose3d(in_channels=8*channel_width,
+                                               out_channels=8*channel_width,
+                                               kernel_size=1,
+                                               stride=2,
+                                               output_padding=1,
+                                               padding=0)
+
+        # Batch * 16*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 4 * 16 * 16
+        # has encode information
+        self.conv3d_41_de = Conv3x3_BN(in_channels=16 * channel_width,
+                                       out_channels=8 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+        # Batch * 8*channel_width * 4 * 16 * 16 => Batch * 4*channel_width * 4 * 16 * 16
+        self.conv3d_42_de = Conv3x3_BN(in_channels=8 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 4 * 16 * 16 => Batch * 4*channel_width * 8 * 32 * 32
+        self.upsampling_3 = nn.ConvTranspose3d(in_channels = 4 * channel_width,
+                                               out_channels = 4 * channel_width,
+                                               kernel_size = 1,
+                                               stride = 2,
+                                               output_padding = 1,
+                                               padding = 0)
+
+        # Batch * 8*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 8 * 32 * 32
+        # has encode information
+        self.conv3d_31_de = Conv3x3_BN(in_channels=8 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 8 * 32 * 32 => Batch * 2*channel_width * 8 * 32 * 32
+        self.conv3d_32_de = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 8 * 32 * 32 => Batch * 2*channel_width * 16 * 64 * 64
+        self.upsampling_2 = nn.ConvTranspose3d(in_channels = 2 * channel_width,
+                                               out_channels = 2 * channel_width,
+                                               kernel_size = 1,
+                                               stride = 2,
+                                               output_padding = 1,
+                                               padding = 0)
+
+        # Batch * 4*channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 16 * 64 * 64
+        # has encode information
+        self.conv3d_21_de = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 16 * 64 * 64 => Batch * channel_width * 16 * 64 * 64
+        self.conv3d_22_de = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * channel_width * 16 * 64 * 64 => Batch * channel_width * 32 * 128 * 128
+        self.upsampling_1 = nn.ConvTranspose3d(in_channels = 1 * channel_width,
+                                               out_channels = 1 * channel_width,
+                                               kernel_size = 1,
+                                               stride = 2,
+                                               output_padding = 1,
+                                               padding = 0)
+
+        # Batch * 2*channel_width * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        # has encode information
+        self.conv3d_11_de = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * channel_width * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        # same
+        self.conv3d_12_de = Conv3x3_BN(in_channels=channel_width,
+                                       out_channels=channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        self.conv_final = nn.Conv3d(in_channels=channel_width,
+                                    out_channels=num_class,
+                                    kernel_size=1)
+
+
+    def forward(self, input):
+        output_1 = self.conv3d_12_en(self.conv3d_11_en(input))
+        output = self.downsampling_1(output_1)
+
+        output_2 = self.conv3d_22_en(self.conv3d_21_en(output))
+        output = self.downsampling_2(output_2)
+
+        output_3 = self.conv3d_32_en(self.conv3d_31_en(output))
+        output = self.downsampling_3(output_3)
+
+        output_4 = self.conv3d_42_en(self.conv3d_41_en(output))
+        output = self.downsampling_4(output_4)
+
+        output = self.conv3d_52(self.conv3d_51(output))
+
+        output = self.upsampling_4(input=output)
+        output = self.conv3d_42_de(self.conv3d_41_de(torch.cat((output, output_4), dim=1)))
+
+        output = self.upsampling_3(input=output)
+        output = self.conv3d_32_de(self.conv3d_31_de(torch.cat((output, output_3), dim=1)))
+
+        output = self.upsampling_2(input=output)
+        output = self.conv3d_22_de(self.conv3d_21_de(torch.cat((output, output_2), dim=1)))
+
+        output = self.upsampling_1(input=output)
+        output = self.conv3d_12_de(self.conv3d_11_de(torch.cat((output, output_1), dim=1)))
+
+        output = self.conv_final(output)
+
+        return output
+
+# use 3D-DWT to downsample, use 3D-IDWT to upsample
+class Neuron_WaveSNet_V3(Module):
+    def __init__(self, num_class=2, with_BN=True, channel_width=4, wavename = 'haar'):
+        super(Neuron_WaveSNet_V3, self).__init__()
+        # Batch * 1 * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        self.conv3d_11_en = Conv3x3_BN(in_channels=1,
+                                       out_channels=1 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+        # Batch * channel_width * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        # same
+        self.conv3d_12_en = Conv3x3_BN(in_channels=1 * channel_width,
+                                       out_channels=1 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * channel_width * 32 * 128 * 128 => Batch * channel_width * 16 * 64 * 64
+        self.downsampling_1 = DWT_3D_tiny(wavename = wavename)
+
+        # Batch * channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 16 * 64 * 64
+        self.conv3d_21_en = Conv3x3_BN(in_channels=1 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 16 * 64 * 64
+        # same
+        self.conv3d_22_en = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 8 * 32 * 32
+        self.downsampling_2 = DWT_3D(wavename = wavename)
+
+        # Batch * 2*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 8 * 32 * 32
+        self.conv3d_31_en = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 8 * 32 * 32
+        # same
+        self.conv3d_32_en = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 4 * 16 * 16
+        self.downsampling_3 = DWT_3D(wavename = wavename)
+
+        # Batch * 4*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 4 * 16 * 16
+        self.conv3d_41_en = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=8 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 8*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 4 * 16 * 16
+        # same
+        self.conv3d_42_en = Conv3x3_BN(in_channels=8 * channel_width,
+                                       out_channels=8 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 8*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 2 * 8 * 8
+        self.downsampling_4 = DWT_3D(wavename = wavename)
+
+        # Batch * 8*channel_width * 2 * 8 * 8 => Batch * 8*channel_width * 2 * 8 * 8
+        # same
+        self.conv3d_51 = Conv3x3_BN(in_channels=8 * channel_width,
+                                    out_channels=8 * channel_width,
+                                    kernel_size=3,
+                                    padding=1,
+                                    with_BN=with_BN)
+        self.conv3d_52 = Conv3x3_BN(in_channels=8 * channel_width,
+                                    out_channels=8 * channel_width,
+                                    kernel_size=3,
+                                    padding=1,
+                                    with_BN=with_BN)
+
+        # Batch * 8*channel_width * 2 * 8 * 8 => Batch * 8*channel_width * 4 * 16 * 16
+        self.upsampling_4 = IDWT_3D(wavename = wavename)
+
+        # Batch * 16*channel_width * 4 * 16 * 16 => Batch * 8*channel_width * 4 * 16 * 16
+        # has encode information
+        self.conv3d_41_de = Conv3x3_BN(in_channels=16 * channel_width,
+                                       out_channels=8 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+        # Batch * 8*channel_width * 4 * 16 * 16 => Batch * 4*channel_width * 4 * 16 * 16
+        self.conv3d_42_de = Conv3x3_BN(in_channels=8 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 4 * 16 * 16 => Batch * 4*channel_width * 8 * 32 * 32
+        self.upsampling_3 = IDWT_3D(wavename = wavename)
+
+
+        # Batch * 8*channel_width * 8 * 32 * 32 => Batch * 4*channel_width * 8 * 32 * 32
+        # has encode information
+        self.conv3d_31_de = Conv3x3_BN(in_channels=8 * channel_width,
+                                       out_channels=4 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 4*channel_width * 8 * 32 * 32 => Batch * 2*channel_width * 8 * 32 * 32
+        self.conv3d_32_de = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 8 * 32 * 32 => Batch * 2*channel_width * 16 * 64 * 64
+        self.upsampling_2 = IDWT_3D(wavename = wavename)
+
+        # Batch * 4*channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 16 * 64 * 64
+        # has encode information
+        self.conv3d_21_de = Conv3x3_BN(in_channels=4 * channel_width,
+                                       out_channels=2 * channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * 2*channel_width * 16 * 64 * 64 => Batch * channel_width * 16 * 64 * 64
+        self.conv3d_22_de = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * channel_width * 16 * 64 * 64 => Batch * channel_width * 32 * 128 * 128
+        self.upsampling_1 = IDWT_3D(wavename = wavename)
+
+        # Batch * 2*channel_width * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        # has encode information
+        self.conv3d_11_de = Conv3x3_BN(in_channels=2 * channel_width,
+                                       out_channels=channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        # Batch * channel_width * 32 * 128 * 128 => Batch * channel_width * 32 * 128 * 128
+        # same
+        self.conv3d_12_de = Conv3x3_BN(in_channels=channel_width,
+                                       out_channels=channel_width,
+                                       kernel_size=3,
+                                       padding=1,
+                                       with_BN=with_BN)
+
+        self.conv_final = nn.Conv3d(in_channels=channel_width,
+                                    out_channels=num_class,
+                                    kernel_size=1)
+
+
+    def forward(self, input):
+        output_1 = self.conv3d_12_en(self.conv3d_11_en(input))
+        output, LLH_1, LHL_1, LHH_1, HLL_1, HLH_1, HHL_1, HHH_1 = self.downsampling_1(output_1)
+
+        output_2 = self.conv3d_22_en(self.conv3d_21_en(output))
+        output, LLH_2, LHL_2, LHH_2, HLL_2, HLH_2, HHL_2, HHH_2 = self.downsampling_2(output_2)
+
+        output_3 = self.conv3d_32_en(self.conv3d_31_en(output))
+        output, LLH_3, LHL_3, LHH_3, HLL_3, HLH_3, HHL_3, HHH_3 = self.downsampling_3(output_3)
+
+        output_4 = self.conv3d_42_en(self.conv3d_41_en(output))
+        output, LLH_4, LHL_4, LHH_4, HLL_4, HLH_4, HHL_4, HHH_4 = self.downsampling_4(output_4)
+
+        output = self.conv3d_52(self.conv3d_51(output))
+
+        output = self.upsampling_4(output, LLH_4, LHL_4, LHH_4, HLL_4, HLH_4, HHL_4, HHH_4)
+        output = self.conv3d_42_de(self.conv3d_41_de(torch.cat((output, output_4), dim=1)))
+
+        output = self.upsampling_3(output, LLH_3, LHL_3, LHH_3, HLL_3, HLH_3, HHL_3, HHH_3)
+        output = self.conv3d_32_de(self.conv3d_31_de(torch.cat((output, output_3), dim=1)))
+
+        output = self.upsampling_2(output, LLH_2, LHL_2, LHH_2, HLL_2, HLH_2, HHL_2, HHH_2)
+        output = self.conv3d_22_de(self.conv3d_21_de(torch.cat((output, output_2), dim=1)))
+
+        output = self.upsampling_1(output, LLH_1, LHL_1, LHH_1, HLL_1, HLH_1, HHL_1, HHH_1)
         output = self.conv3d_12_de(self.conv3d_11_de(torch.cat((output, output_1), dim=1)))
 
         output = self.conv_final(output)
