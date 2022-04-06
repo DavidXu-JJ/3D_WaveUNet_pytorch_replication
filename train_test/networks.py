@@ -1090,7 +1090,7 @@ class Neuron_WaveSNet_V3(Module):
                                        with_BN=with_BN)
 
         # Batch * channel_width * 32 * 128 * 128 => Batch * channel_width * 16 * 64 * 64
-        self.downsampling_1 = DWT_3D_tiny(wavename = wavename)
+        self.downsampling_1 = DWT_3D(wavename = wavename)
 
         # Batch * channel_width * 16 * 64 * 64 => Batch * 2*channel_width * 16 * 64 * 64
         self.conv3d_21_en = Conv3x3_BN(in_channels=1 * channel_width,
